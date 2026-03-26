@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brave-tui"
+version = "0.1.0"
+description = "Generic Brave browser backend for web-app TUIs"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.40.0",
+]
