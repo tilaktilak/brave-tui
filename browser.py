@@ -106,6 +106,8 @@ class BaseBraveBrowser:
                 "--disable-extensions",
                 "--disable-component-extensions-with-background-pages",
                 "--disable-component-update",
+                "--password-store=basic",  # let Brave use GNOME Keyring / KWallet
+                "--use-mock-keychain",     # macOS equivalent
                 *self._ignore_args,
             ],
         )
@@ -178,6 +180,11 @@ class BaseBraveBrowser:
                 dst_db = dst_default / rel
                 if src_db.exists():
                     self._copy_sqlite(src_db, dst_db)
+
+            # Saved passwords.
+            login_data = src_default / "Login Data"
+            if login_data.exists():
+                self._copy_sqlite(login_data, dst_default / "Login Data")
             return
 
         # Brave is not running — safe to do a full copy.
