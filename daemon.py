@@ -67,6 +67,7 @@ class Daemon:
         self._socket_path.unlink(missing_ok=True)
 
         ready = asyncio.Event()
+        active_handlers: set[asyncio.Task] = set()
 
         async def start_browser() -> None:
             try:
@@ -78,6 +79,8 @@ class Daemon:
                 ready.set()
 
         async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            task = asyncio.current_task()
+            active_handlers.add(task)
             await ready.wait()
             try:
                 while True:
@@ -91,9 +94,11 @@ class Daemon:
                     resp = await self._dispatch(req)
                     writer.write(json.dumps(resp).encode() + b"\n")
                     await writer.drain()
-            except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
+            except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError,
+                    asyncio.CancelledError):
                 pass
             finally:
+                active_handlers.discard(task)
                 writer.close()
 
         stop = asyncio.Event()
@@ -108,6 +113,12 @@ class Daemon:
 
         async with server:
             await stop.wait()
+
+        # Cancel all open client connections so they don't hang after shutdown.
+        for task in list(active_handlers):
+            task.cancel()
+        if active_handlers:
+            await asyncio.gather(*active_handlers, return_exceptions=True)
 
         print("[daemon] shutting down…", flush=True)
         await self._browser.close()
