@@ -140,23 +140,48 @@ class BaseBraveBrowser:
         """
         Copy the Default directory from the real Brave profile to this app's profile.
 
-        Only runs when real Brave is not open (avoids corrupting live files).
-        Skips lock files, caches, and other volatile entries.
+        When Brave is not running: full copy (minus caches and lock files).
+        When Brave is running: safe targeted copy of auth-critical files only
+        (cookies via SQLite backup API, Local State for encryption keys).
         """
         if not REAL_PROFILE_DIR.exists():
             return
+
+        brave_running = False
         lock = REAL_PROFILE_DIR / "SingletonLock"
         if lock.exists():
             try:
                 pid = int(os.readlink(lock).split("-")[-1])
                 os.kill(pid, 0)
-                return  # Brave is running — don't touch its files
+                brave_running = True
             except (ValueError, OSError):
-                pass  # stale lock, safe to proceed
+                pass  # stale lock
 
-        src = REAL_PROFILE_DIR / "Default"
-        dst = self._profile_dir / "Default"
-        if not src.exists():
+        src_default = REAL_PROFILE_DIR / "Default"
+        dst_default = self._profile_dir / "Default"
+
+        if brave_running:
+            # Full copy is unsafe while Brave holds file locks.
+            # Copy only the files needed for session auth.
+            if not src_default.exists():
+                return
+            dst_default.mkdir(parents=True, exist_ok=True)
+
+            # Local State holds the cookie encryption key on Linux.
+            local_state = REAL_PROFILE_DIR / "Local State"
+            if local_state.exists():
+                shutil.copy2(local_state, self._profile_dir / "Local State")
+
+            # Cookies live in one of two places depending on Brave version.
+            for rel in ("Cookies", "Network/Cookies"):
+                src_db = src_default / rel
+                dst_db = dst_default / rel
+                if src_db.exists():
+                    self._copy_sqlite(src_db, dst_db)
+            return
+
+        # Brave is not running — safe to do a full copy.
+        if not src_default.exists():
             return
 
         skip = {
@@ -165,11 +190,11 @@ class BaseBraveBrowser:
         }
         skip_dirs = {"GPUCache", "Code Cache", "DawnGraphiteCache", "DawnWebGPUCache"}
 
-        dst.mkdir(parents=True, exist_ok=True)
-        for item in src.iterdir():
+        dst_default.mkdir(parents=True, exist_ok=True)
+        for item in src_default.iterdir():
             if item.name in skip or item.name in skip_dirs:
                 continue
-            d = dst / item.name
+            d = dst_default / item.name
             try:
                 if item.is_dir():
                     if d.exists():
@@ -179,6 +204,18 @@ class BaseBraveBrowser:
                     shutil.copy2(item, d)
             except Exception:
                 pass
+
+    @staticmethod
+    def _copy_sqlite(src: Path, dst: Path) -> None:
+        """Copy a SQLite database safely using the backup API."""
+        import sqlite3
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with sqlite3.connect(f"file:{src}?mode=ro&immutable=1", uri=True) as src_conn:
+                with sqlite3.connect(str(dst)) as dst_conn:
+                    src_conn.backup(dst_conn)
+        except Exception:
+            shutil.copy2(src, dst)
 
     def _remove_stale_locks(self, profile: Path) -> None:
         """Remove SingletonLock only if the owning process is no longer alive."""
